@@ -21,19 +21,24 @@ admin.initializeApp({
 
 // SQLite veritabanını aç ve tabloyu oluştur
 (async () => {
-  db = await open({
-    filename: './tokens.db',
-    driver: sqlite3.Database
-  });
+  try {
+    db = await open({
+      filename: './tokens.db',
+      driver: sqlite3.Database
+    });
 
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS tokens (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token TEXT UNIQUE
-    )
-  `);
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token TEXT UNIQUE
+      )
+    `);
 
-  console.log('🗄️ SQLite veritabanı hazır.');
+    console.log('🗄️ SQLite veritabanı hazır.');
+  } catch (err) {
+    console.error('SQLite açma hatası:', err);
+    process.exit(1);
+  }
 })();
 
 // Tokenları topic'e abone eden fonksiyon
@@ -41,6 +46,7 @@ async function subscribeTokenToTopic(token, topic) {
   try {
     const response = await admin.messaging().subscribeToTopic(token, topic);
     console.log('Topic abonelik sonucu:', response);
+    return response;
   } catch (error) {
     console.error('Topic abonelik hatası:', error);
     throw error;
@@ -61,8 +67,10 @@ async function sendFCMNotification(title, body, icon) {
   try {
     const response = await admin.messaging().send(message);
     console.log('📩 Bildirim gönderildi:', response);
+    return response;
   } catch (error) {
     console.error('❌ Bildirim gönderme hatası:', error);
+    throw error;
   }
 }
 
@@ -75,7 +83,7 @@ app.post('/register-token', async (req, res) => {
     await db.run('INSERT OR IGNORE INTO tokens (token) VALUES (?)', token);
     await subscribeTokenToTopic(token, 'all');
     console.log('Gelen token:', token);
-    res.json({ success: true });
+    res.json({ success: true, message: 'Token kaydedildi ve topic abone edildi' });
   } catch (error) {
     console.error('Token kayıt/abonelik hatası:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -85,36 +93,61 @@ app.post('/register-token', async (req, res) => {
 // Anında bildirim gönderme
 app.post('/send', async (req, res) => {
   const { title, body, icon } = req.body;
-  await sendFCMNotification(title, body, icon);
-  res.json({ success: true, message: 'Bildirim gönderildi' });
+  if (!title || !body) return res.status(400).json({ success: false, message: 'Başlık ve mesaj gerekli' });
+
+  try {
+    const response = await sendFCMNotification(title, body, icon);
+    res.json({ success: true, message: 'Bildirim gönderildi', response });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 // Zamanlı bildirim
-app.post('/schedule', (req, res) => {
+app.post('/schedule', async (req, res) => {
   const { title, body, icon, time, daily } = req.body;
-  const date = new Date(time);
+  if (!title || !body || !time) return res.status(400).json({ success: false, message: 'Başlık, mesaj ve zaman gerekli' });
 
-  if (daily) {
-    const cronTime = `${date.getMinutes()} ${date.getHours()} * * *`;
-    cron.schedule(cronTime, () => {
-      sendFCMNotification(title, body, icon);
-    });
-    console.log(`⏰ Günlük bildirim ayarlandı: ${cronTime}`);
-  } else {
-    const now = Date.now();
-    const delay = date.getTime() - now;
+  try {
+    const date = new Date(time);
 
-    if (delay > 0) {
-      setTimeout(() => {
-        sendFCMNotification(title, body, icon);
+    if (daily) {
+      const cronTime = `${date.getMinutes()} ${date.getHours()} * * *`;
+      cron.schedule(cronTime, async () => {
+        try {
+          await sendFCMNotification(title, body, icon);
+        } catch (err) {
+          console.error('Zamanlı bildirim hatası:', err);
+        }
+      });
+      console.log(`⏰ Günlük bildirim ayarlandı: ${cronTime}`);
+      res.json({ success: true, message: 'Günlük bildirim zamanlandı' });
+    } else {
+      const now = Date.now();
+      const delay = date.getTime() - now;
+
+      if (delay <= 0) return res.status(400).json({ success: false, message: 'Geçmiş zaman seçilemez' });
+
+      setTimeout(async () => {
+        try {
+          await sendFCMNotification(title, body, icon);
+        } catch (err) {
+          console.error('Tek seferlik bildirim hatası:', err);
+        }
       }, delay);
+
+      console.log(`📅 Tek seferlik bildirim ${time} için ayarlandı`);
+      res.json({ success: true, message: 'Tek seferlik bildirim zamanlandı' });
     }
-    console.log(`📅 Tek seferlik bildirim ${time} için ayarlandı`);
+  } catch (error) {
+    console.error('Schedule endpoint hatası:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
-
-  res.json({ success: true, message: 'Bildirim zamanlandı' });
 });
 
-app.listen(3000, () => {
-  console.log('🚀 Bildirim sunucusu 3000 portunda çalışıyor');
+// Sunucu başlat
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Bildirim sunucusu ${PORT} portunda çalışıyor`);
 });
+      
