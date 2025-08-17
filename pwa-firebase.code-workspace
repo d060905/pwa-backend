@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "../pwa-firebase"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "pwa-firebase"
+	}
+}
